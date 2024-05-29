@@ -1,103 +1,40 @@
-grabber = {}
-grabber.version = "3.0.0"
-grabber.uuid = 0
-grabber.smokeUnits = {}
-grabber.timers = {}  -- Table to store the timer handles
+-- cap base logic
 
-function grabber.getUUID()
-    grabber.uuid = grabber.uuid + 1 
-    return grabber.uuid 
-end
-
-function grabber.isUnitInZone(unit, zone)
-    local unitPoint = unit:getPoint()
-    local zonePoint = grabber.getZoneCenter(zone)
-
-    local dx = unitPoint.x - zonePoint.x
-    local dz = unitPoint.z - zonePoint.y -- zone point needs to use y instead of Z
-    local dist = math.sqrt(dx * dx + dz * dz)
-
-    return dist <= trigger.misc.getZone(zone).radius
-end
-
-function grabber.checkUnitsInZone(zoneName, coalitionSide)
-    local unitsInZone = false
-    local groups = coalition.getGroups(coalitionSide)
-    for _, group in ipairs(groups) do
-        for _, unit in ipairs(group:getUnits()) do
-            if grabber.isUnitInZone(unit, zoneName) then
-                unitsInZone = true
-                break
-            end
-        end
-        if unitsInZone then break end
-    end
-    return unitsInZone
-end
-
-function grabber.getZoneCenter(zoneName)
-    local zone = trigger.misc.getZone(zoneName)
-    if zone then
-        local terrainHeight = land.getHeight({x = zone.point.x, y = zone.point.z})
-        local adjustedPoint = {
-            x = zone.point.x,
-            z = terrainHeight,  -- Correctly use terrain height as the y coordinate
-            y = zone.point.z  -- Correctly use y as the z coordinate
-        }
-        return adjustedPoint
-    end
-    return nil
-end
-
-function grabber.checkZones()
+-- Function to get all airbases that are either BLUE or RED
+function getBlueAndRedAirbases()
     local airbases = world.getAirbases()
-    for _, airbase in pairs(airbases) do
-        local zoneName = "Zone_" .. airbase:getName()
-        local zonePoint = grabber.getZoneCenter(zoneName)
-        if zonePoint then
-            local redInZone = grabber.checkUnitsInZone(zoneName, coalition.side.RED)
-            local blueInZone = grabber.checkUnitsInZone(zoneName, coalition.side.BLUE)
+    local airbasesAndZones = {}
 
-            -- Determine ownership based on unit presence
-            local currentCoalition = airbase:getCoalition()
-            if redInZone and not blueInZone then
-                if currentCoalition ~= coalition.side.RED then
-                    airbase:setCoalition(coalition.side.RED)
-                    trigger.action.outText("Airbase " .. airbase:getName() .. " captured by RED", 10)
-                    grabber.updateSmoke(zonePoint, coalition.side.RED, zoneName)
-                    grabber.awardPointsToPlayers(zoneName, 100, coalition.side.RED)
-                    grabber.spawnCaptureUnits(zonePoint, coalition.side.RED, zonePoint)
-                end
-            elseif blueInZone and not redInZone then
-                if currentCoalition ~= coalition.side.BLUE then
-                    airbase:setCoalition(coalition.side.BLUE)
-                    trigger.action.outText("Airbase " .. airbase:getName() .. " captured by BLUE", 10)
-                    grabber.updateSmoke(zonePoint, coalition.side.BLUE, zoneName)
-                    grabber.awardPointsToPlayers(zoneName, 100, coalition.side.BLUE)
-                    grabber.spawnCaptureUnits(zonePoint, coalition.side.BLUE, zonePoint)
-                end
-            end
+    for _, airbase in ipairs(airbases) do
+        local coalitionSide = airbase:getCoalition()
+        if coalitionSide == coalition.side.RED or coalitionSide == coalition.side.BLUE then
+            local airbaseName = airbase:getName()
+            local zoneName = "Zone_" .. airbaseName  -- Assuming zones are named "Zone_<AirbaseName>"
+            table.insert(airbasesAndZones, {airbase = airbaseName, zone = zoneName})
         end
     end
+
+    return airbasesAndZones
 end
 
-function grabber.updateSmoke(zonePoint, coalitionSide, zoneName)
-    if grabber.smokeUnits[zoneName] then
-        -- Remove existing smoke entries from our table
-        grabber.smokeUnits[zoneName] = nil
-    end
-
-    -- Cancel the previous timer if it exists
-    if grabber.timers[zoneName] then
-        timer.removeFunction(grabber.timers[zoneName])
-        grabber.timers[zoneName] = nil
-    end
-
-    -- Add new smoke for the new coalition
-    grabber.addSmoke(zonePoint, coalitionSide, zoneName)
+-- Function to adjust the coordinates of a point
+function adjustCoordinates(point)
+    local terrainHeight = land.getHeight({x = point.x, y = point.z})
+    return {
+        x = point.x,
+        z = terrainHeight,  -- Correctly use terrain height as the y coordinate
+        y = point.z  -- Correctly use y as the z coordinate
+    }
 end
 
-function grabber.addSmoke(zonePoint, coalitionSide, zoneName)
+-- Table to store smoke units and timers
+local smokeManagement = {
+    smokeUnits = {},
+    timers = {}
+}
+
+-- Function to add and manage smoke
+function addSmoke(zonePoint, coalitionSide, zoneName)
     local smokeColor = trigger.smokeColor.Red
     if coalitionSide == coalition.side.BLUE then
         smokeColor = trigger.smokeColor.Blue
@@ -109,94 +46,114 @@ function grabber.addSmoke(zonePoint, coalitionSide, zoneName)
         z = zonePoint.z
     }
     
-    -- Add smoke at the smoke location 
-    local smokeID = trigger.action.smoke({x = smokePoint.x,  y = smokePoint.z, z = smokePoint.y}, smokeColor)
-    if not grabber.smokeUnits[zoneName] then
-        grabber.smokeUnits[zoneName] = {}
+    -- Add smoke at the location
+    local smokeID = trigger.action.smoke(smokePoint, smokeColor)
+    if not smokeManagement.smokeUnits[zoneName] then
+        smokeManagement.smokeUnits[zoneName] = {}
     end
-    table.insert(grabber.smokeUnits[zoneName], smokeID)
+    table.insert(smokeManagement.smokeUnits[zoneName], smokeID)
     
-    -- Respawn smoke every 5 minutes (300 seconds)
-    grabber.timers[zoneName] = timer.scheduleFunction(function()
-        grabber.addSmoke(zonePoint, coalitionSide, zoneName)
+    -- Schedule smoke to be added again every 5 minutes (300 seconds)
+    smokeManagement.timers[zoneName] = timer.scheduleFunction(function()
+        addSmoke(zonePoint, coalitionSide, zoneName)
     end, {}, timer.getTime() + 300)
 end
 
-function grabber.spawnCaptureUnits(tentPoint, coalitionSide, zonePoint)
-    local spawnUnits = {
-        ["RED"] = {
-            {type = "BTR-80", name = "Red APC"},
-            {type = "Soldier M4", name = "Red Soldier"},
-            {type = "ZU-23 Emplacement Closed", name = "Red AAA"},
-            {type = "outpost_tent", name = "Red Tent"}
-        },
-        ["BLUE"] = {
-            {type = "HMMWV", name = "Blue Vehicle"},
-            {type = "Soldier M4", name = "Blue Soldier"},
-            {type = "Vulcan", name = "Blue AAA"},
-            {type = "outpost_tent", name = "Blue Tent"}
-        }
-    }
-    local coalitionName = coalitionSide == coalition.side.BLUE and "BLUE" or "RED"
-    local groupData = {
+-- Function to update smoke for a zone
+function updateSmoke(zonePoint, coalitionSide, zoneName)
+    if smokeManagement.smokeUnits[zoneName] then
+        -- Remove existing smoke entries
+        smokeManagement.smokeUnits[zoneName] = nil
+    end
+
+    -- Cancel the previous timer if it exists
+    if smokeManagement.timers[zoneName] then
+        timer.removeFunction(smokeManagement.timers[zoneName])
+        smokeManagement.timers[zoneName] = nil
+    end
+
+    -- Add new smoke for the new coalition
+    addSmoke(zonePoint, coalitionSide, zoneName)
+end
+
+-- Function to add smoke and infantry units to the airbase
+function addSmokeAndInfantry(airbaseName, coalitionSide)
+    local airbase = Airbase.getByName(airbaseName)
+    local position = adjustCoordinates(airbase:getPoint())
+    local smokePosition = airbase:getPoint()
+
+    -- Add smoke
+    updateSmoke(smokePosition, coalitionSide, airbaseName)
+
+    -- Spawn infantry units
+    local infantryGroupData = {
         ["category"] = Group.Category.GROUND,
         ["country"] = coalitionSide == coalition.side.BLUE and country.id.USA or country.id.RUSSIA,
-        ["name"] = "Capture Group " .. grabber.getUUID(),
+        ["name"] = airbaseName .. "_Infantry_" .. math.random(1000, 9999),
         ["units"] = {}
     }
-    for _, unitData in ipairs(spawnUnits[coalitionName]) do
-        local unitOffset = 40  -- Increase offset distance for spacing
-        local unitPoint = {
-            x = tentPoint.x + math.random(-unitOffset, unitOffset),
-            y = tentPoint.y,
-            z = tentPoint.z + math.random(-unitOffset, unitOffset)
-        }
-        table.insert(groupData.units, {
-            ["type"] = unitData.type,
-            ["name"] = unitData.name .. " " .. grabber.getUUID(),
-            ["x"] = unitPoint.x,
-            ["y"] = unitPoint.y,
+
+    for i = 1, 4 do
+        local unit = {
+            ["type"] = "Soldier M4",
+            ["name"] = airbaseName .. "_Infantry_" .. i,
+            ["x"] = position.x + math.random(-10, 10), 
+            ["y"] = position.y + math.random(-10, 10),
             ["heading"] = math.random() * 2 * math.pi
-        })
+        }
+        table.insert(infantryGroupData.units, unit)
     end
-    coalition.addGroup(groupData["country"], Group.Category.GROUND, groupData)
-    trigger.action.outText("Spawned capture units for " .. coalitionName .. " at tent location", 10)
+
+    coalition.addGroup(infantryGroupData["country"], infantryGroupData["category"], infantryGroupData)
+    trigger.action.outText("Infantry units added to " .. airbaseName, 10)
 end
 
-function grabber.awardPointsToPlayers(zoneName, points, coalitionSide)
-    local groups = coalition.getGroups(coalitionSide)
+-- Function to check and change airbase ownership
+function checkAndCaptureAirbase(airbaseName, captureZoneName)
 
-    for _, group in ipairs(groups) do
-        for _, unit in ipairs(group:getUnits()) do
-            if unit:getPlayerName() and grabber.isUnitInZone(unit, zoneName) then
-                local playerName = unit:getPlayerName()
-                unit:getPlayer():addScore(points)
-                trigger.action.outText("Player " .. playerName .. " awarded " .. points .. " points for capturing " .. zoneName, 10)
-            end
+-- Debugging capture zone name
+    trigger.action.outText("Debug: Checking capture zone - " .. captureZoneName, 10)
+    local redUnitsInZone = mist.getUnitsInZones(mist.makeUnitTable({'[red]'}), {captureZoneName}, 'cylinder')
+    local blueUnitsInZone = mist.getUnitsInZones(mist.makeUnitTable({'[blue]'}), {captureZoneName}, 'cylinder')
+    local airbase = Airbase.getByName(airbaseName)
+  -- Debugging unit counts
+    trigger.action.outText("Debug: Units in zone - RED: " .. #redUnitsInZone .. ", BLUE: " .. #blueUnitsInZone, 10)
+    
+    if #redUnitsInZone > 0 and #blueUnitsInZone == 0 then
+        if airbase:getCoalition() ~= coalition.side.RED then
+            airbase:setCoalition(coalition.side.RED)
+            trigger.action.outText(airbaseName .. " captured by RED", 10)
+            addSmokeAndInfantry(airbaseName, coalition.side.RED)
+        end
+    elseif #blueUnitsInZone > 0 and #redUnitsInZone == 0 then
+        if airbase:getCoalition() ~= coalition.side.BLUE then
+            airbase:setCoalition(coalition.side.BLUE)
+            trigger.action.outText(airbaseName .. " captured by BLUE", 10)
+            addSmokeAndInfantry(airbaseName, coalition.side.BLUE)
         end
     end
 end
 
-function grabber.initializeSmokesAndUnits()
-    local airbases = world.getAirbases()
-    for _, airbase in pairs(airbases) do
-        local zoneName = "Zone_" .. airbase:getName()
-        local zonePoint = grabber.getZoneCenter(zoneName)
-        if zonePoint then
-            local currentCoalition = airbase:getCoalition()
-            grabber.addSmoke(zonePoint, currentCoalition, zoneName)
-        end
+-- Function to initialize capture logic for multiple airbases
+function initializeAirbaseCapture()
+    -- Get all airbases that are either BLUE or RED
+    local airbasesAndZones = getBlueAndRedAirbases()
+    local detectedAirbasesMessage = "Detected airbases:\n"
+
+    for _, ab in ipairs(airbasesAndZones) do
+        detectedAirbasesMessage = detectedAirbasesMessage .. ab.airbase .. "\n"
+        addSmokeAndInfantry(ab.airbase, Airbase.getByName(ab.airbase):getCoalition()) -- Initial setup
+        mist.scheduleFunction(checkAndCaptureAirbase, {ab.airbase, ab.zone}, timer.getTime() + 0, 60)
     end
+
+    trigger.action.outText(detectedAirbasesMessage, 10)
 end
 
-function grabber:onEvent(event)
-    if not event then return end 
-    if event.id == world.event.S_EVENT_LAND or event.id == world.event.S_EVENT_TAKEOFF or event.id == world.event.S_EVENT_BASE_CAPTURE then
-        grabber.checkZones()
-    end
+-- Function to announce the script is starting
+function announceScriptStart()
+    trigger.action.outText("Airbase capture script will start in 10 seconds", 10)
 end
 
--- Start up
-world.addEventHandler(grabber)
-timer.scheduleFunction(grabber.initializeSmokesAndUnits, {}, timer.getTime() + 5)  -- Initialize smokes and units at mission start
-timer.scheduleFunction(grabber.checkZones, {}, timer.getTime() + 10, 60)  -- Check zones every 60 seconds
+-- Announce the script start and schedule the initial setup
+announceScriptStart()
+mist.scheduleFunction(initializeAirbaseCapture, {}, timer.getTime() + 10)
