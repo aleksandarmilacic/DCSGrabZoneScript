@@ -1,5 +1,3 @@
--- cap base logic
-
 -- Function to get all airbases that are either BLUE or RED
 function getBlueAndRedAirbases()
     local airbases = world.getAirbases()
@@ -105,31 +103,42 @@ function addSmokeAndInfantry(airbaseName, coalitionSide)
     end
 
     coalition.addGroup(infantryGroupData["country"], infantryGroupData["category"], infantryGroupData)
-    trigger.action.outText("Infantry units added to " .. airbaseName, 10)
+    trigger.action.outText("Infantry units arrived and took control of " .. airbaseName, 10)
+end
+
+-- Function to award points to units in a zone
+function awardPointsToUnitsInZone(units, points)
+    for _, unit in ipairs(units) do
+        local playerName = unit:getPlayerName()
+        if playerName then
+            local player = unit:getPlayer()
+            if player then
+                player:addScore(points)
+                trigger.action.outText("Player " .. playerName .. " awarded " .. points .. " points", 10)
+            end
+        end
+    end
 end
 
 -- Function to check and change airbase ownership
 function checkAndCaptureAirbase(airbaseName, captureZoneName)
-
--- Debugging capture zone name
-    trigger.action.outText("Debug: Checking capture zone - " .. captureZoneName, 10)
     local redUnitsInZone = mist.getUnitsInZones(mist.makeUnitTable({'[red]'}), {captureZoneName}, 'cylinder')
     local blueUnitsInZone = mist.getUnitsInZones(mist.makeUnitTable({'[blue]'}), {captureZoneName}, 'cylinder')
     local airbase = Airbase.getByName(airbaseName)
-  -- Debugging unit counts
-    trigger.action.outText("Debug: Units in zone - RED: " .. #redUnitsInZone .. ", BLUE: " .. #blueUnitsInZone, 10)
-    
+
     if #redUnitsInZone > 0 and #blueUnitsInZone == 0 then
         if airbase:getCoalition() ~= coalition.side.RED then
             airbase:setCoalition(coalition.side.RED)
             trigger.action.outText(airbaseName .. " captured by RED", 10)
             addSmokeAndInfantry(airbaseName, coalition.side.RED)
+            awardPointsToUnitsInZone(redUnitsInZone, 100)
         end
     elseif #blueUnitsInZone > 0 and #redUnitsInZone == 0 then
         if airbase:getCoalition() ~= coalition.side.BLUE then
             airbase:setCoalition(coalition.side.BLUE)
             trigger.action.outText(airbaseName .. " captured by BLUE", 10)
             addSmokeAndInfantry(airbaseName, coalition.side.BLUE)
+            awardPointsToUnitsInZone(blueUnitsInZone, 100)
         end
     end
 end
